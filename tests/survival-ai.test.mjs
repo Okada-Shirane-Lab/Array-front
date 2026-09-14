@@ -1,0 +1,21 @@
+import assert from 'node:assert/strict';
+import * as T from '../engine/three.module.js';
+import {PRESETS} from '../engine/model.js';
+import {updateSurvivalAI} from '../engine/survival-ai.js';
+function actor(i,x,z){return {index:i,seed:i*.7,dead:0,hp:100,shield:0,setup:{...PRESETS[0]},g:{position:new T.Vector3(x,0,z),rotation:{y:0}},legs:[{rotation:{x:0}},{rotation:{x:0}}],shoot:.4};}
+function game(bots){return {time:0,mode:'playing',dead:0,hp:100,player:new T.Vector3(300,1.72,250),enemies:bots,zone:{x:0,z:0,radius:360},difficulty:{intervalScale:1,infantryAccuracy:.49,speedScale:1},ground:()=>0,move:(p,x,z)=>{p.x+=x;p.z+=z;},line:()=>true,actorPoint:e=>e.g.position.clone().add(new T.Vector3(0,1.25,0)),seekLoot:()=>null,beam:()=>{},gunshot:()=>{},damageLog:[],damageSurvivor(target,amount,source){this.damageLog.push({target,amount,source});if(target){target.hp-=amount;if(target.hp<=0){target.dead=Infinity;target.hp=0;}}else this.hp-=amount;}};}
+function step(g,n){for(let i=0;i<n;i++){g.time+=.05;for(const e of g.enemies)updateSurvivalAI(g,e,.05);}}
+const previousRandom=Math.random;Math.random=()=>0;
+try{
+ const g=game([actor(0,0,0),actor(1,0,-25)]);step(g,200);
+ assert(g.damageLog.length>0);assert(g.damageLog.every(v=>v.target!==null&&v.target!==v.source));assert(g.enemies.some(e=>e.dead===Infinity));
+ const corpse=g.enemies.find(e=>e.dead);const hp=corpse.hp;step(g,400);assert.equal(corpse.hp,hp);assert.equal(corpse.dead,Infinity);
+ console.log('PASS FFA bot combat, no self/player preference, permanent elimination');
+ const wall=game([actor(0,0,0),actor(1,0,-20)]);wall.line=()=>false;step(wall,160);assert.equal(wall.damageLog.length,0);console.log('PASS occlusion blocks acquisition and shots');
+ const stale=game([actor(0,0,0),actor(1,0,-20)]);step(stale,2);assert(stale.enemies[0].aiHasTarget);stale.line=()=>false;step(stale,80);assert.equal(stale.damageLog.length,0);console.log('PASS fresh LOS blocks damage after cached target becomes occluded');
+ const crowd=game(Array.from({length:50},(_,i)=>actor(i,Math.cos(i/50*Math.PI*2)*130,Math.sin(i/50*Math.PI*2)*130)));let calls=0,max=0,total=0;crowd.line=()=>{calls++;return true;};const start=performance.now();for(let i=0;i<400;i++){calls=0;step(crowd,1);max=Math.max(max,calls);total+=calls;}assert(max<=12);console.log(JSON.stringify({test:'50-bot budget',secondsSimulated:20,headlessMilliseconds:Math.round(performance.now()-start),maxLOSPerFrame:max,totalLOS:total,eliminations:crowd.enemies.filter(e=>e.dead).length}));
+ const zone=game([actor(0,120,0)]);zone.zone={x:0,z:0,radius:80};step(zone,100);assert(zone.enemies[0].g.position.x<110);console.log('PASS outside-zone movement has inward priority');
+ const costly=game([actor(0,0,0),actor(1,0,-20)]);costly.enemies[0].setup={...PRESETS[0],elements:256,power:110,cooling:25,fireRate:12};costly.move=()=>{};costly.enemies[1].shoot=1e9;costly.damageSurvivor=function(target,amount,source){this.damageLog.push({target,amount,source});};let reloaded=false,overheated=false;for(let i=0;i<1600;i++){const shooter=costly.enemies[0],blocked=shooter.aiReload>.05||shooter.aiOverheat&&shooter.heat>28,before=costly.damageLog.length;step(costly,1);if(blocked)assert.equal(costly.damageLog.length,before);reloaded ||= shooter.aiReload>0;overheated ||= shooter.aiOverheat;assert(shooter.energy>=0&&shooter.energy<=100&&shooter.heat>=0&&shooter.heat<=100);}assert(reloaded&&overheated);console.log('PASS high-power bots stop to recharge and recover from overheating');
+ const share=[];for(const beams of [1,5]){const b=game([actor(0,0,0),actor(1,0,-20)]);b.move=()=>{};b.enemies[1].shoot=1e9;b.enemies[0].setup={...PRESETS[0],beamCount:beams};b.damageSurvivor=function(target,amount,source){this.damageLog.push({target,amount,source});};while(!b.damageLog.length&&b.time<5)step(b,1);share.push(b.damageLog[0].amount);}assert(Math.abs(share[0]/share[1]-5)<1e-9);console.log('PASS multibeam bot output divides across configured beam count');
+ const dead=game([actor(0,0,0)]);dead.enemies[0].dead=Infinity;dead.enemies[0].hp=0;dead.seekLoot=()=>{throw Error('dead bot looted');};step(dead,10);assert.equal(dead.enemies[0].g.position.x,0);console.log('PASS dead actors neither move nor loot');
+}finally{Math.random=previousRandom;}
